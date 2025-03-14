@@ -5,31 +5,105 @@ from app.models.user import User
 from app import db
 from app.utils.decorators import login_required
 import requests
-
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 import random
 import socket
 import re
+import smtplib
+import os
+from datetime import datetime
+# from twilio.rest import Client
+import firebase_admin
+from firebase_admin import credentials, auth
+from flask import Flask, request, jsonify
 
+# Load Firebase Credentials (Cek apakah sudah diinisialisasi)
+if not firebase_admin._apps:
+    cred = credentials.Certificate("firebase_admin.json")
+    firebase_admin.initialize_app(cred)
 
 SITE_KEY = '6LdA_ugqAAAAANRhelfTEZmF39WC_WPwCdOwufnx'
 SECRET_KEY = '6LdA_ugqAAAAAF8bkhqJO1AFw8HqtREhuLLNdhPh'
 VERIFY_URL = 'https://www.google.com/recaptcha/api/siteverify'
 
+# Email configuration
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+SMTP_USERNAME = "shaqiraima@gmail.com"  
+SMTP_PASSWORD = "yvqdghauprowwqfm"      
 
-# Define Auth Route
 
 auth_bp = Blueprint('auth', __name__)
 
-# ROuting Login Page
+@auth_bp.route('/otp', methods=['GET'])
+def otp_login_page():
+    return render_template('otp.html')
 
+# 🔹 Endpoint untuk Verifikasi OTP Firebase
+@auth_bp.route('/verify_otp', methods=['POST'])
+def verify_otp():
+    try:
+        data = request.json
+        id_token = data.get("id_token")
+
+        if not id_token:
+            return jsonify({"success": False, "message": "Token tidak ditemukan"}), 400
+
+        # Verifikasi token dengan Firebase
+        decoded_token = auth.verify_id_token(id_token)
+        phone_number = decoded_token.get("phone_number")
+
+        if not phone_number:
+            return jsonify({"success": False, "message": "Verifikasi gagal"}), 401
+
+        # Simpan user ke session agar bisa mengakses dashboard
+        session["user"] = phone_number
+
+        return jsonify({"success": True, "message": "Login berhasil"}), 200
+
+    except Exception as e:
+        print("Error:", e)
+        return jsonify({"success": False, "message": "Terjadi kesalahan"}), 500
+
+@auth_bp.route('/dashboard', methods=['GET'])
+def dashboard():
+    if 'user' not in session:
+        return redirect(url_for('auth.login_page'))  # Redirect ke login jika belum login
+    return render_template('dashboard.html', user=session["user"])
+
+# 🔹 Routing Halaman Login
 @auth_bp.route('/', methods=['GET'])
 def login_page():
     return render_template('login.html', site_key=SITE_KEY)
 
+@auth_bp.route('/login-otp', methods=['POST'])
+def login_otp():
+    try:
+        phone_number = request.form.get('phone_number')
+        otp_code = request.form.get('otp_code')
+
+        if not phone_number or not otp_code:
+            flash('Nomor telepon dan OTP diperlukan.', 'danger')
+            return redirect(url_for('auth.login_page'))
+
+        # Contoh validasi OTP (gunakan sistem OTP yang kamu pakai, misal Firebase atau Twilio)
+        if validate_otp(phone_number, otp_code):  # Gantilah dengan fungsi OTP-mu
+            session['user'] = phone_number  # Simpan user dalam session dengan nomor HP
+            flash('Login dengan OTP berhasil!', 'success')
+            return redirect(url_for('auth.dashboard'))  # Arahkan ke dashboard
+        else:
+            flash('OTP salah atau kadaluarsa.', 'danger')
+            return redirect(url_for('auth.login_page'))
+
+    except Exception as e:
+        flash(f'Error saat login OTP: {str(e)}', 'danger')
+        return redirect(url_for('auth.login_page'))
+
 @auth_bp.route('/login', methods=['POST'])
 def login():
     try:
-        # Check reCAPTCHA first
+        # Check reCAPTCHA
         secret_response = request.form.get('g-recaptcha-response')
         if not secret_response:
             flash('Please complete the reCAPTCHA verification', 'danger')
@@ -41,7 +115,7 @@ def login():
             flash('reCAPTCHA verification failed. Please try again.', 'danger')
             return redirect(url_for('auth.login_page'))
 
-        # Then proceed with login
+        # Proses login
         email = request.form.get('email')
         password = request.form.get('password')
         
@@ -63,8 +137,7 @@ def login():
         flash('An error occurred during login. Please try again.', 'danger')
         return redirect(url_for('auth.login_page'))
 
-# Routing Logout Page
-
+# 🔹 Logout
 @auth_bp.route('/logout')
 @login_required
 def logout():
@@ -168,3 +241,33 @@ def account_settings():
         return redirect(url_for("auth.account_settings"))
 
     return render_template('account_settings.html', user_email=user.email)
+
+@auth_bp.route('/send_confirmation', methods=['POST'])
+def send_confirmation():
+    try:
+        #verifikasi pass_email
+        receiver = request.form.get('customerEmail')
+        if not receiver:
+            return jsonify({'error': 'Email is required'}), 400
+            
+        #message
+        msg = MIMEMultipart("alternative")
+        msg['Subject'] = 'Konfirmasi Pembayaran Berhasil'
+        msg['From'] = SMTP_USERNAME
+        msg['To'] = receiver
+
+        #template with date
+        current_date = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+        html_content = render_template('email.html', date=current_date)
+        template = MIMEText(html_content, "html")
+        msg.attach(template)
+            
+        # Kirim email menggunakan SMTP
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()  # Aktifkan TLS
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(msg)
+        
+        return jsonify({'message': 'Confirmation email sent successfully'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500

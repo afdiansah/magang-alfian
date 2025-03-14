@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OTP Login dengan Firebase</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 400px;
+            margin: 0 auto;
+            padding: 20px;
+            text-align: center;
+        }
+        .input-group {
+            margin-bottom: 15px;
+            text-align: left;
+        }
+        input {
+            padding: 8px;
+            width: 100%;
+            box-sizing: border-box;
+            margin-bottom: 10px;
+        }
+        button {
+            padding: 10px;
+            background-color: #4285f4;
+            color: white;
+            border: none;
+            cursor: pointer;
+            width: 100%;
+        }
+        button:hover {
+            background-color: #3367d6;
+        }
+        .hidden {
+            display: none;
+        }
+        #status {
+            margin-top: 15px;
+            padding: 10px;
+        }
+        .error { color: red; }
+        .success { color: green; }
+    </style>
+    
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.0.0/firebase-app.js";
+        import { getAuth, RecaptchaVerifier, signInWithPhoneNumber } from "https://www.gstatic.com/firebasejs/10.0.0/firebase-auth.js";
+
+        // ✅ Konfigurasi Firebase
+        const firebaseConfig = {
+            apiKey: "AIzaSyDpsy5-e7iC36EohnhIPOJ9ok6g6FUd9Qk",
+            authDomain: "idss-582c7.firebaseapp.com",
+            projectId: "idss-582c7",
+            storageBucket: "idss-582c7.appspot.com",
+            messagingSenderId: "792665672939",
+            appId: "1:792665672939:web:9800c3c0bc831a3ac6c2ae",
+            measurementId: "G-9NXELKXDKS"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+
+        document.addEventListener("DOMContentLoaded", function () {
+            if (document.getElementById("recaptcha-container")) {
+                initRecaptcha();
+            }
+
+            document.getElementById("sendOtpBtn").addEventListener("click", sendOTP);
+            document.getElementById("verifyOtpBtn").addEventListener("click", verifyOTP);
+        });
+
+        // ✅ Inisialisasi reCAPTCHA dengan pengecekan elemen
+        function initRecaptcha() {
+            try {
+                if (!document.getElementById("recaptcha-container")) {
+                    console.error("⛔ Elemen #recaptcha-container tidak ditemukan!");
+                    return;
+                }
+
+                window.recaptchaVerifier = new RecaptchaVerifier(auth, "recaptcha-container", {
+                    size: "invisible",
+                    callback: () => console.log("✅ reCAPTCHA berhasil!"),
+                    "expired-callback": () => {
+                        console.log("⚠️ reCAPTCHA expired, mengulang...");
+                        initRecaptcha();
+                    }
+                });
+
+                recaptchaVerifier.render().then((widgetId) => {
+                    window.recaptchaWidgetId = widgetId;
+                });
+            } catch (error) {
+                console.error("❌ Error saat inisialisasi reCAPTCHA:", error);
+            }
+        }
+
+        // ✅ Format Nomor Telepon
+        function formatPhoneNumber(phoneNumber) {
+            phoneNumber = phoneNumber.replace(/\s/g, '');
+            if (phoneNumber.startsWith('0')) return '+62' + phoneNumber.substring(1);
+            if (phoneNumber.startsWith('62')) return '+' + phoneNumber;
+            if (!phoneNumber.startsWith('+')) return '+62' + phoneNumber;
+            return phoneNumber;
+        }
+
+        // ✅ Fungsi Kirim OTP
+        function sendOTP() {
+            const phoneInput = document.getElementById("phoneNumber");
+            let phoneNumber = formatPhoneNumber(phoneInput.value.trim());
+
+            phoneInput.value = phoneNumber;
+
+            if (!phoneNumber.match(/^\+[0-9]{10,15}$/)) {
+                showStatus("Format nomor tidak valid! Gunakan format: +62812XXXXXXX", "error");
+                return;
+            }
+
+            const sendButton = document.getElementById("sendOtpBtn");
+            sendButton.disabled = true;
+            sendButton.textContent = "Mengirim...";
+
+            showStatus("Mengirim OTP...", "info");
+
+            signInWithPhoneNumber(auth, phoneNumber, window.recaptchaVerifier)
+                .then(confirmationResult => {
+                    window.confirmationResult = confirmationResult;
+                    showStatus("Kode OTP telah dikirim!", "success");
+
+                    document.getElementById("otpSection").classList.remove("hidden");
+                    document.getElementById("otpCode").focus();
+
+                    let secondsLeft = 60;
+                    sendButton.textContent = `Kirim Ulang (${secondsLeft}s)`;
+
+                    const interval = setInterval(() => {
+                        secondsLeft--;
+                        sendButton.textContent = `Kirim Ulang (${secondsLeft}s)`;
+
+                        if (secondsLeft <= 0) {
+                            clearInterval(interval);
+                            sendButton.disabled = false;
+                            sendButton.textContent = "Kirim OTP";
+                        }
+                    }, 1000);
+                })
+                .catch(error => {
+                    console.error("Gagal mengirim OTP:", error);
+                    showStatus(`Gagal mengirim OTP: ${error.message}`, "error");
+
+                    sendButton.disabled = false;
+                    sendButton.textContent = "Kirim OTP";
+
+                    initRecaptcha();
+                });
+        }
+
+        // ✅ Fungsi Verifikasi OTP
+        function verifyOTP() {
+            const otpCode = document.getElementById("otpCode").value.trim();
+            if (!otpCode) {
+                showStatus("Masukkan kode OTP!", "error");
+                return;
+            }
+
+            const verifyButton = document.getElementById("verifyOtpBtn");
+            verifyButton.disabled = true;
+            verifyButton.textContent = "Memverifikasi...";
+
+            showStatus("Memverifikasi OTP...", "info");
+
+            window.confirmationResult.confirm(otpCode)
+                .then(result => result.user.getIdToken())
+                .then(idToken => fetch("/verify_otp", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ id_token: idToken })
+                }))
+                .then(response => response.json())
+                .then(data => {
+                    showStatus(`Login berhasil! ${data.message}`, "success");
+                    setTimeout(() => window.location.href = "/dashboard", 1500);
+                })
+                .catch(error => {
+                    console.error("Verifikasi gagal:", error);
+                    showStatus(`Verifikasi gagal: ${error.message}`, "error");
+
+                    verifyButton.disabled = false;
+                    verifyButton.textContent = "Verifikasi";
+                });
+        }
+
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById("status");
+            if (statusDiv) {
+                statusDiv.textContent = message;
+                statusDiv.className = type;
+            }
+        }
+    </script>
+</head>
+<body>
+    <h2>Login dengan OTP</h2>
+    <div class="input-group">
+        <input type="text" id="phoneNumber" placeholder="Masukkan Nomor HP">
+        <button id="sendOtpBtn">Kirim OTP</button>
+    </div>
+    <div id="recaptcha-container"></div>
+    <div id="otpSection" class="hidden">
+        <input type="text" id="otpCode" placeholder="Masukkan Kode OTP">
+        <button id="verifyOtpBtn">Verifikasi</button>
+    </div>
+    <div id="status"></div>
+</body>
+</html>
